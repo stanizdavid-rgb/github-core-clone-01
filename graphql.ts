@@ -490,15 +490,15 @@ function resolveField(ctx: ExecCtx, typeName: string, source: Source, field: Fie
           return repo ? repoSource(repo) : null;
         }
         if (decoded.kind === 'I') {
-          const [owner, repoName, num] = decoded.key.split(':');
-          const repo = ctx.forge.getRepo(owner, repoName);
-          const issue = repo?.issues.find((i) => i.number === Number(num));
+          const parsed = parseSubjectKey(decoded.key);
+          const repo = parsed ? ctx.forge.getRepo(parsed.owner, parsed.name) : undefined;
+          const issue = repo?.issues.find((i) => i.number === parsed?.num);
           return repo && issue ? issueSource(repo, issue) : null;
         }
         if (decoded.kind === 'P') {
-          const [owner, repoName, num] = decoded.key.split(':');
-          const repo = ctx.forge.getRepo(owner, repoName);
-          const pull = repo?.pulls.find((p) => p.number === Number(num));
+          const parsed = parseSubjectKey(decoded.key);
+          const repo = parsed ? ctx.forge.getRepo(parsed.owner, parsed.name) : undefined;
+          const pull = repo?.pulls.find((p) => p.number === parsed?.num);
           return repo && pull ? pullSource(repo, pull) : null;
         }
         return null;
@@ -708,6 +708,17 @@ function repoFromGlobalId(ctx: ExecCtx, id: unknown): Repo | null {
   return ctx.forge.getRepo(owner, name) ?? null;
 }
 
+/** Parse an issue/pull-request global id key of the form `owner/name:number`. */
+function parseSubjectKey(key: string): { owner: string; name: string; num: number } | null {
+  const colon = key.indexOf(':');
+  if (colon < 0) return null;
+  const repoPart = key.slice(0, colon);
+  const num = Number(key.slice(colon + 1));
+  const slash = repoPart.indexOf('/');
+  if (slash < 0 || !Number.isInteger(num)) return null;
+  return { owner: repoPart.slice(0, slash), name: repoPart.slice(slash + 1), num };
+}
+
 function createIssueMutation(ctx: ExecCtx, args: Record<string, unknown>): Source {
   const input = (args.input ?? {}) as Record<string, unknown>;
   const repo = repoFromGlobalId(ctx, input.repositoryId);
@@ -724,13 +735,13 @@ function createIssueMutation(ctx: ExecCtx, args: Record<string, unknown>): Sourc
 function closeIssueMutation(ctx: ExecCtx, args: Record<string, unknown>): Source {
   const input = (args.input ?? {}) as Record<string, unknown>;
   const decoded = typeof input.issueId === 'string' ? decodeGlobalId(input.issueId) : null;
-  if (!decoded || decoded.kind !== 'I') {
+  const parsed = decoded && decoded.kind === 'I' ? parseSubjectKey(decoded.key) : null;
+  if (!parsed) {
     ctx.errors.push({ message: 'Could not resolve to an Issue with the global id.' });
     return { __type: 'CloseIssuePayload', issue: null };
   }
-  const [owner, name, num] = decoded.key.split(':');
-  const repo = ctx.forge.getRepo(owner, name);
-  const issue = repo?.issues.find((i) => i.number === Number(num));
+  const repo = ctx.forge.getRepo(parsed.owner, parsed.name);
+  const issue = repo?.issues.find((i) => i.number === parsed.num);
   if (!repo || !issue) {
     ctx.errors.push({ message: 'Could not resolve to an Issue with the global id.' });
     return { __type: 'CloseIssuePayload', issue: null };
@@ -763,13 +774,13 @@ function createPullRequestMutation(ctx: ExecCtx, args: Record<string, unknown>):
 function mergePullRequestMutation(ctx: ExecCtx, args: Record<string, unknown>): Source {
   const input = (args.input ?? {}) as Record<string, unknown>;
   const decoded = typeof input.pullRequestId === 'string' ? decodeGlobalId(input.pullRequestId) : null;
-  if (!decoded || decoded.kind !== 'P') {
+  const parsed = decoded && decoded.kind === 'P' ? parseSubjectKey(decoded.key) : null;
+  if (!parsed) {
     ctx.errors.push({ message: 'Could not resolve to a PullRequest with the global id.' });
     return { __type: 'MergePullRequestPayload', pull: null };
   }
-  const [owner, name, num] = decoded.key.split(':');
-  const repo = ctx.forge.getRepo(owner, name);
-  const pull = repo?.pulls.find((p) => p.number === Number(num));
+  const repo = ctx.forge.getRepo(parsed.owner, parsed.name);
+  const pull = repo?.pulls.find((p) => p.number === parsed.num);
   if (!repo || !pull) {
     ctx.errors.push({ message: 'Could not resolve to a PullRequest with the global id.' });
     return { __type: 'MergePullRequestPayload', pull: null };
@@ -785,13 +796,13 @@ function mergePullRequestMutation(ctx: ExecCtx, args: Record<string, unknown>): 
 function addCommentMutation(ctx: ExecCtx, args: Record<string, unknown>): Source {
   const input = (args.input ?? {}) as Record<string, unknown>;
   const decoded = typeof input.subjectId === 'string' ? decodeGlobalId(input.subjectId) : null;
-  if (!decoded || decoded.kind !== 'I') {
+  const parsed = decoded && decoded.kind === 'I' ? parseSubjectKey(decoded.key) : null;
+  if (!parsed) {
     ctx.errors.push({ message: 'Could not resolve to an Issue with the global id.' });
     return { __type: 'AddCommentPayload', comment: null };
   }
-  const [owner, name, num] = decoded.key.split(':');
-  const repo = ctx.forge.getRepo(owner, name);
-  const issue = repo?.issues.find((i) => i.number === Number(num));
+  const repo = ctx.forge.getRepo(parsed.owner, parsed.name);
+  const issue = repo?.issues.find((i) => i.number === parsed.num);
   if (!repo || !issue) {
     ctx.errors.push({ message: 'Could not resolve to an Issue with the global id.' });
     return { __type: 'AddCommentPayload', comment: null };

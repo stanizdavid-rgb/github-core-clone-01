@@ -249,7 +249,7 @@ function commitJson(forge: Forge, repo: Repo, sha: string): Record<string, unkno
     commit: {
       author: { name: author.name, email: author.email, date: author.date },
       committer: { name: committer.name, email: committer.email, date: committer.date },
-      message: c.message,
+      message: c.message.replace(/\n+$/, ''),
       tree: { sha: c.tree, url: `/api/v3/repos/${repo.owner}/${repo.name}/git/trees/${c.tree}` },
       url: `/api/v3/repos/${repo.owner}/${repo.name}/git/commits/${sha}`,
       comment_count: 0,

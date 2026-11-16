@@ -278,17 +278,20 @@ function lsRefsResponse(repo: Repo, args: string[]): Buffer {
   const prefixes: string[] = [];
   let peel = false;
   let symrefs = false;
-  for (const arg of args) {
+  let unborn = false;
+  for (const raw of args) {
+    const arg = raw.trim();
     if (arg === 'peel') peel = true;
     else if (arg === 'symrefs') symrefs = true;
-    else if (arg.startsWith('ref-prefix ')) prefixes.push(arg.slice('ref-prefix '.length));
+    else if (arg === 'unborn') unborn = true;
+    else if (arg.startsWith('ref-prefix ')) prefixes.push(arg.slice('ref-prefix '.length).trim());
   }
   const keep = (name: string): boolean => prefixes.length === 0 || prefixes.some((p) => name.startsWith(p));
   const parts: Buffer[] = [];
   const headOid = repo.refs.get(`refs/heads/${repo.defaultBranch}`) ?? ZERO_OID;
   const refs = sortedRefs(repo);
   if (refs.length === 0) {
-    if (keep('HEAD')) {
+    if (unborn && keep('HEAD')) {
       parts.push(pktLine(`unborn HEAD${symrefs ? ' symref-target:refs/heads/' + repo.defaultBranch : ''}\n`));
     }
   } else {
@@ -313,14 +316,15 @@ function fetchResponse(repo: Repo, wants: string[], haves: string[], shallowSent
   const sel = selectFetchObjects(repo, wants, haves, shallowSent, depth);
   const pack = writePack(sel.objects.values());
   const parts: Buffer[] = [];
-  parts.push(pktLine('acknowledgments\n'));
+  // Protocol v2: the acknowledgments section is only sent when the client sent
+  // have lines. With no haves, real git expects the packfile (or shallow-info)
+  // section first and dies on a stray "acknowledgments" header.
   if (haves.length > 0) {
+    parts.push(pktLine('acknowledgments\n'));
     parts.push(pktLine(`ACK ${haves[0]}\n`));
     parts.push(pktLine('ready\n'));
-  } else {
-    parts.push(pktLine('NAK\n'));
+    parts.push(PKT_DELIM);
   }
-  parts.push(PKT_DELIM);
   if (depth !== undefined || sel.shallow.length > 0 || sel.unshallow.length > 0) {
     parts.push(pktLine('shallow-info\n'));
     for (const s of sel.shallow) parts.push(pktLine(`shallow ${s}\n`));
