@@ -252,10 +252,12 @@ export function writePack(objects: Iterable<GitObject>): Buffer {
   parts.push(header);
   for (const o of list) {
     parts.push(writePackObjectHeader(o.type, o.data.length));
-    // Level 1: packs are decompressed by the client and verified by checksum,
-    // so the compressed bytes need not match any canonical form. Level 1 is
-    // several times faster than the default (6) on the small objects here.
-    parts.push(deflateSync(o.data, { level: 1 }));
+    // Default deflate level: level 1 was measured SLOWER than the default
+    // (6) on the small objects here (85.9us vs 80.1us per 3-object pack) and
+    // produces a slightly larger pack, so there is no reason to override it.
+    // Packs are decompressed by the client and verified by checksum, so the
+    // compressed bytes need not match any canonical form either way.
+    parts.push(deflateSync(o.data));
   }
   const body = Buffer.concat(parts);
   return Buffer.concat([body, createHash('sha1').update(body).digest()]);

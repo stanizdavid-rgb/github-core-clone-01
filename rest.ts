@@ -55,20 +55,25 @@ function err(status: number, message: string): RestResult {
 // base64-encoding it on every userJson() call.
 const USER_NODE_ID = globalId('U', VIEWER.login);
 
+// The viewer's whole user object never changes either: build it once and
+// reuse the frozen object. Every caller only embeds it in a response that
+// JSON.stringify renders, and nobody mutates it, so sharing it is safe.
+const USER_JSON: Record<string, unknown> = Object.freeze({
+  login: VIEWER.login,
+  id: VIEWER.id,
+  node_id: USER_NODE_ID,
+  avatar_url: `https://avatars.githubusercontent.com/u/${VIEWER.id}?v=4`,
+  gravatar_id: '',
+  url: `/api/v3/users/${VIEWER.login}`,
+  html_url: `https://github.com/${VIEWER.login}`,
+  type: 'User',
+  site_admin: false,
+  name: VIEWER.name,
+  email: VIEWER.email,
+});
+
 function userJson(): Record<string, unknown> {
-  return {
-    login: VIEWER.login,
-    id: VIEWER.id,
-    node_id: USER_NODE_ID,
-    avatar_url: `https://avatars.githubusercontent.com/u/${VIEWER.id}?v=4`,
-    gravatar_id: '',
-    url: `/api/v3/users/${VIEWER.login}`,
-    html_url: `https://github.com/${VIEWER.login}`,
-    type: 'User',
-    site_admin: false,
-    name: VIEWER.name,
-    email: VIEWER.email,
-  };
+  return USER_JSON;
 }
 
 function repoJson(forge: Forge, repo: Repo): Record<string, unknown> {

@@ -485,6 +485,10 @@ export function handleUploadPack(
 
 // ---------------------------------------------------------------- receive-pack
 
+// The 'unpack ok' report line is the same in every successful receive-pack
+// reply: build its pkt-line once instead of per push.
+const UNPACK_OK_LINE = pktLine('unpack ok\n');
+
 export function handleReceivePack(forge: Forge, owner: string, repoName: string, body: Buffer): GitResult {
   const repo = forge.getRepo(owner, repoName);
   if (!repo || owner !== 'adaiversen') return jsonResult(404, { message: 'Not Found' });
@@ -520,7 +524,7 @@ export function handleReceivePack(forge: Forge, owner: string, repoName: string,
 
   const lookup = (oid: string): GitObject | undefined => repo.objects.get(oid);
   const lines: Buffer[] = [];
-  lines.push(pktLine(`unpack ${unpackOk ? 'ok' : unpackDetail}\n`));
+  lines.push(unpackOk ? UNPACK_OK_LINE : pktLine(`unpack ${unpackDetail}\n`));
   for (const cmd of commands) {
     let result: string | null = null; // null = ok
     if (!cmd.ref.startsWith('refs/')) {
