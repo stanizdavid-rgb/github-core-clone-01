@@ -51,6 +51,40 @@ function isTagObject(repo: Repo, oid: string): boolean {
   return repo.objects.get(oid)?.type === 'tag';
 }
 
+// ---------------------------------------------------------------- response caches
+//
+// Wire replies for read-only git requests are pure functions of a small set of
+// inputs, so they are cached per repo and served as prebuilt Buffers:
+//  - v0 advertisement: service + default branch + refs
+//  - ls-refs: args + refs
+//  - fetch (v2 and v0): wants + haves + shallow + depth + object count
+// Objects are content-addressed and append-only (never removed or mutated),
+// so the object count plus the explicit request parameters fully determines
+// the reachable set a fetch returns; refs are fingerprinted explicitly.
+// A cache hit is therefore byte-identical to a fresh build. Caches live in a
+// WeakMap keyed by the Repo object, so deleting a repo drops its cache.
+interface GitCache {
+  adv: Map<string, GitResult>;
+  ls: Map<string, GitResult>;
+  fetch: Map<string, GitResult>;
+}
+const gitCaches = new WeakMap<Repo, GitCache>();
+function gitCacheFor(repo: Repo): GitCache {
+  let c = gitCaches.get(repo);
+  if (!c) {
+    c = { adv: new Map(), ls: new Map(), fetch: new Map() };
+    gitCaches.set(repo, c);
+  }
+  return c;
+}
+/** Deterministic fingerprint of the repo's refs (name=oid pairs, sorted). */
+function refsFingerprint(repo: Repo): string {
+  const names = [...repo.refs.keys()].sort();
+  let s = '';
+  for (const n of names) s += `${n}=${repo.refs.get(n)};`;
+  return s;
+}
+
 // ---------------------------------------------------------------- info/refs
 
 function v0Advertisement(repo: Repo, service: 'git-upload-pack' | 'git-receive-pack'): Buffer {
@@ -90,6 +124,9 @@ function v2Advertisement(): Buffer {
   return Buffer.concat(parts);
 }
 
+// The v2 capability advertisement carries no repo data: build it once.
+const V2_ADVERTISEMENT = v2Advertisement();
+
 export function handleInfoRefs(
   forge: Forge,
   owner: string,
@@ -101,14 +138,29 @@ export function handleInfoRefs(
   if (!repo || owner !== 'adaiversen') return jsonResult(404, { message: 'Not Found' });
   if (service === 'git-upload-pack') {
     if (gitProtocol === 2) {
-      return { status: 200, contentType: 'application/x-git-upload-pack-advertisement', body: v2Advertisement() };
+      // The v2 capability advertisement carries no repo data: build it once.
+      return { status: 200, contentType: 'application/x-git-upload-pack-advertisement', body: V2_ADVERTISEMENT };
     }
-    return { status: 200, contentType: 'application/x-git-upload-pack-advertisement', body: v0Advertisement(repo, 'git-upload-pack') };
+    return cachedAdvertisement(repo, 'git-upload-pack');
   }
   if (service === 'git-receive-pack') {
-    return { status: 200, contentType: 'application/x-git-receive-pack-advertisement', body: v0Advertisement(repo, 'git-receive-pack') };
+    return cachedAdvertisement(repo, 'git-receive-pack');
   }
   return jsonResult(400, { message: 'Invalid service' });
+}
+
+function cachedAdvertisement(repo: Repo, service: 'git-upload-pack' | 'git-receive-pack'): GitResult {
+  const cache = gitCacheFor(repo);
+  const key = `${service}|${repo.defaultBranch}|${refsFingerprint(repo)}`;
+  const hit = cache.adv.get(key);
+  if (hit) return hit;
+  const result: GitResult = {
+    status: 200,
+    contentType: `application/x-${service}-advertisement`,
+    body: v0Advertisement(repo, service),
+  };
+  cache.adv.set(key, result);
+  return result;
 }
 
 // ---------------------------------------------------------------- fetch object selection
@@ -370,7 +422,13 @@ export function handleUploadPack(
     const command = first.replace('command=', '').trim();
     const args = packets.slice(1);
     if (command === 'ls-refs') {
-      return { status: 200, contentType: 'application/x-git-upload-pack-result', body: lsRefsResponse(repo, args) };
+      const cache = gitCacheFor(repo);
+      const key = `ls|${JSON.stringify(args)}|${refsFingerprint(repo)}`;
+      const hit = cache.ls.get(key);
+      if (hit) return hit;
+      const result: GitResult = { status: 200, contentType: 'application/x-git-upload-pack-result', body: lsRefsResponse(repo, args) };
+      cache.ls.set(key, result);
+      return result;
     }
     if (command === 'fetch') {
       const wants: string[] = [];
@@ -387,7 +445,13 @@ export function handleUploadPack(
           if (Number.isInteger(n) && n > 0) depth = n;
         }
       }
-      return { status: 200, contentType: 'application/x-git-upload-pack-result', body: fetchResponse(repo, wants, haves, shallow, depth) };
+      const cache = gitCacheFor(repo);
+      const key = `v2|${wants.join(',')}|${haves.join(',')}|${shallow.join(',')}|${depth ?? ''}|${repo.objects.size}`;
+      const hit = cache.fetch.get(key);
+      if (hit) return hit;
+      const result: GitResult = { status: 200, contentType: 'application/x-git-upload-pack-result', body: fetchResponse(repo, wants, haves, shallow, depth) };
+      cache.fetch.set(key, result);
+      return result;
     }
     return jsonResult(400, { message: `unknown command: ${command}` });
   }
@@ -410,7 +474,13 @@ export function handleUploadPack(
     }
   }
   if (wants.length === 0) return jsonResult(400, { message: 'Bad Request: no want lines' });
-  return { status: 200, contentType: 'application/x-git-upload-pack-result', body: fetchResponseV0(repo, wants, haves, shallow, depth) };
+  const cache = gitCacheFor(repo);
+  const key = `v0|${wants.join(',')}|${haves.join(',')}|${shallow.join(',')}|${depth ?? ''}|${repo.objects.size}`;
+  const hit = cache.fetch.get(key);
+  if (hit) return hit;
+  const result: GitResult = { status: 200, contentType: 'application/x-git-upload-pack-result', body: fetchResponseV0(repo, wants, haves, shallow, depth) };
+  cache.fetch.set(key, result);
+  return result;
 }
 
 // ---------------------------------------------------------------- receive-pack

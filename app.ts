@@ -120,6 +120,10 @@ async function handleRequest(forge: Forge, req: IncomingMessage, res: ServerResp
       sendJson(res, 204, null, result.headers ?? {});
       return;
     }
+    if (result.raw !== undefined) {
+      sendRaw(res, result.status, JSON_TYPE, result.raw);
+      return;
+    }
     sendJson(res, result.status, result.body, result.headers ?? {});
     return;
   }

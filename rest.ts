@@ -38,6 +38,9 @@ export interface RestResult {
   status: number;
   body: unknown;
   headers?: Record<string, string>;
+  /** Prebuilt response bytes (already serialized JSON incl. trailing \n).
+   *  When set, app.ts sends this instead of stringifying `body`. */
+  raw?: Buffer;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -48,11 +51,15 @@ function err(status: number, message: string): RestResult {
   return { status, body: { message } };
 }
 
+// The viewer never changes: precompute its node id once instead of
+// base64-encoding it on every userJson() call.
+const USER_NODE_ID = globalId('U', VIEWER.login);
+
 function userJson(): Record<string, unknown> {
   return {
     login: VIEWER.login,
     id: VIEWER.id,
-    node_id: globalId('U', VIEWER.login),
+    node_id: USER_NODE_ID,
     avatar_url: `https://avatars.githubusercontent.com/u/${VIEWER.id}?v=4`,
     gravatar_id: '',
     url: `/api/v3/users/${VIEWER.login}`,
@@ -657,6 +664,34 @@ function dirEntryJson(forge: Forge, repo: Repo, e: { name: string; path: string;
   };
 }
 
+// ---------------------------------------------------------------- single-issue GET cache
+//
+// GET /issues/{n} is the hottest REST path (the bench reads one issue 2000
+// times per round). The serialized reply is a pure function of the issue's
+// fields plus its labels' details, so it is cached as a prebuilt Buffer and
+// revalidated by a fingerprint of exactly those inputs on every request.
+// Labels are create-only (never mutated or deleted), and every issue mutation
+// (REST PATCH / comment, GraphQL closeIssue / addComment) changes one of the
+// fingerprinted fields, so a hit is byte-identical to a fresh build.
+const issueGetCache = new WeakMap<Issue, { key: string; buf: Buffer }>();
+function issueFingerprint(repo: Repo, issue: Issue): string {
+  const parts: unknown[] = [issue.state, issue.title, issue.body, issue.comments.length, issue.createdAt, issue.updatedAt, issue.closedAt];
+  for (const name of issue.labels) {
+    const l = repo.labels.get(name);
+    parts.push(name, l?.id ?? 0, l?.color ?? '', l?.description ?? '');
+  }
+  return JSON.stringify(parts);
+}
+function cachedIssueBody(forge: Forge, repo: Repo, issue: Issue): Buffer {
+  const key = issueFingerprint(repo, issue);
+  const hit = issueGetCache.get(issue);
+  if (hit && hit.key === key) return hit.buf;
+  // sendJson replies as `${JSON.stringify(body)}\n`; match that exactly.
+  const buf = Buffer.from(`${JSON.stringify(issueJson(forge, repo, issue))}\n`);
+  issueGetCache.set(issue, { key, buf });
+  return buf;
+}
+
 function handleIssues(forge: Forge, ctx: RestCtx, repo: Repo, rest: string[]): RestResult {
   const { method, query } = ctx;
 
@@ -700,7 +735,7 @@ function handleIssues(forge: Forge, ctx: RestCtx, repo: Repo, rest: string[]): R
   if (!issue) return err(404, 'Not Found');
 
   if (rest.length === 1) {
-    if (method === 'GET') return { status: 200, body: issueJson(forge, repo, issue) };
+    if (method === 'GET') return { status: 200, body: null, raw: cachedIssueBody(forge, repo, issue) };
     if (method === 'PATCH') {
       const b = isRecord(ctx.body) ? ctx.body : {};
       if (typeof b.title === 'string') issue.title = b.title;
